@@ -1,6 +1,6 @@
 """FastMCP server with all Railway tool registrations."""
 
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 
 from railway_mcp.client import get_client, RailwayAPIError
 from railway_mcp.formatting import (
