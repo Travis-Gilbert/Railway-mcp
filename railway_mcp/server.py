@@ -1,6 +1,9 @@
 """FastMCP server with all Railway tool registrations."""
 
+from typing import Annotated, Optional
+
 from fastmcp import FastMCP
+from pydantic import Field
 
 from railway_mcp.client import get_client, RailwayAPIError
 from railway_mcp.formatting import (
@@ -14,25 +17,6 @@ from railway_mcp.formatting import (
     format_service_instance_markdown,
     format_services_markdown,
     format_variables_markdown,
-)
-from railway_mcp.models import (
-    BulkSetVariablesInput,
-    CreateEnvironmentInput,
-    DeleteVariableInput,
-    DuplicateEnvironmentInput,
-    GetBuildLogsInput,
-    GetDeployLogsInput,
-    GetDeploymentStatusInput,
-    GetProjectInput,
-    GetServiceInput,
-    GetVariablesUnresolvedInput,
-    ListEnvironmentsInput,
-    ListProjectsInput,
-    ListServicesInput,
-    ListVariablesInput,
-    RedeployInput,
-    RestartDeploymentInput,
-    SetVariableInput,
 )
 from railway_mcp.queries import (
     CREATE_ENVIRONMENT,
@@ -60,18 +44,33 @@ mcp = FastMCP(
     ),
 )
 
+# Type aliases for common annotated params
+ProjectId = Annotated[str, Field(description="Railway project ID (UUID)")]
+ServiceId = Annotated[str, Field(description="Railway service ID (UUID)")]
+EnvironmentId = Annotated[str, Field(description="Railway environment ID (UUID)")]
+DeploymentId = Annotated[str, Field(description="Deployment ID (get from railway_get_deployment_status)")]
+ResponseFmt = Annotated[
+    str,
+    Field(
+        default="markdown",
+        description="Output format: 'markdown' for human-readable, 'json' for structured data",
+    ),
+]
+
 
 # -- Projects -----------------------------------------------------------------
 
 
 @mcp.tool(name="railway_list_projects")
-async def list_projects(input: ListProjectsInput) -> str:
+async def list_projects(
+    response_format: ResponseFmt = "markdown",
+) -> str:
     """List all Railway projects accessible with your API token."""
     try:
         client = get_client()
         data = await client.execute(LIST_PROJECTS)
         projects = _extract_edges(data.get("projects", {}))
-        if input.response_format.value == "json":
+        if response_format == "json":
             return format_response(projects, "json")
         return format_projects_markdown(projects)
     except RailwayAPIError as e:
@@ -79,15 +78,18 @@ async def list_projects(input: ListProjectsInput) -> str:
 
 
 @mcp.tool(name="railway_get_project")
-async def get_project(input: GetProjectInput) -> str:
+async def get_project(
+    project_id: ProjectId,
+    response_format: ResponseFmt = "markdown",
+) -> str:
     """Get details for a single Railway project by ID, including its services and environments."""
     try:
         client = get_client()
-        data = await client.execute(GET_PROJECT, {"id": input.project_id})
+        data = await client.execute(GET_PROJECT, {"id": project_id})
         project = data.get("project")
         if not project:
-            return f"Project `{input.project_id}` not found."
-        if input.response_format.value == "json":
+            return f"Project `{project_id}` not found."
+        if response_format == "json":
             return format_response(project, "json")
         return format_project_markdown(project)
     except RailwayAPIError as e:
@@ -98,16 +100,19 @@ async def get_project(input: GetProjectInput) -> str:
 
 
 @mcp.tool(name="railway_list_services")
-async def list_services(input: ListServicesInput) -> str:
+async def list_services(
+    project_id: ProjectId,
+    response_format: ResponseFmt = "markdown",
+) -> str:
     """List all services in a Railway project."""
     try:
         client = get_client()
-        data = await client.execute(GET_PROJECT, {"id": input.project_id})
+        data = await client.execute(GET_PROJECT, {"id": project_id})
         project = data.get("project")
         if not project:
-            return f"Project `{input.project_id}` not found."
+            return f"Project `{project_id}` not found."
         services = _extract_edges(project.get("services", {}))
-        if input.response_format.value == "json":
+        if response_format == "json":
             return format_response(services, "json")
         return format_services_markdown(services)
     except RailwayAPIError as e:
@@ -115,21 +120,22 @@ async def list_services(input: ListServicesInput) -> str:
 
 
 @mcp.tool(name="railway_get_service")
-async def get_service(input: GetServiceInput) -> str:
+async def get_service(
+    service_id: ServiceId,
+    environment_id: EnvironmentId,
+    response_format: ResponseFmt = "markdown",
+) -> str:
     """Get service configuration for a specific environment, including build/start commands, region, and latest deployment."""
     try:
         client = get_client()
         data = await client.execute(
             GET_SERVICE_INSTANCE,
-            {
-                "serviceId": input.service_id,
-                "environmentId": input.environment_id,
-            },
+            {"serviceId": service_id, "environmentId": environment_id},
         )
         instance = data.get("serviceInstance")
         if not instance:
             return "Service instance not found for that service/environment combination."
-        if input.response_format.value == "json":
+        if response_format == "json":
             return format_response(instance, "json")
         return format_service_instance_markdown(instance)
     except RailwayAPIError as e:
@@ -140,18 +146,21 @@ async def get_service(input: GetServiceInput) -> str:
 
 
 @mcp.tool(name="railway_list_environments")
-async def list_environments(input: ListEnvironmentsInput) -> str:
+async def list_environments(
+    project_id: ProjectId,
+    response_format: ResponseFmt = "markdown",
+) -> str:
     """List all environments in a Railway project."""
     try:
         client = get_client()
         data = await client.execute(
-            LIST_ENVIRONMENTS, {"projectId": input.project_id}
+            LIST_ENVIRONMENTS, {"projectId": project_id}
         )
         project = data.get("project")
         if not project:
-            return f"Project `{input.project_id}` not found."
+            return f"Project `{project_id}` not found."
         envs = _extract_edges(project.get("environments", {}))
-        if input.response_format.value == "json":
+        if response_format == "json":
             return format_response(envs, "json")
         return format_environments_markdown(envs)
     except RailwayAPIError as e:
@@ -159,22 +168,27 @@ async def list_environments(input: ListEnvironmentsInput) -> str:
 
 
 @mcp.tool(name="railway_create_environment")
-async def create_environment(input: CreateEnvironmentInput) -> str:
+async def create_environment(
+    project_id: ProjectId,
+    name: Annotated[str, Field(description="Name for the new environment (e.g. 'staging', 'dev')")],
+    ephemeral: Annotated[bool, Field(description="If true, creates a temporary PR-style environment")] = False,
+    response_format: ResponseFmt = "markdown",
+) -> str:
     """Create a new environment in a Railway project. Use ephemeral=true for temporary PR-style environments."""
     try:
         client = get_client()
-        variables = {
+        gql_vars = {
             "input": {
-                "projectId": input.project_id,
-                "name": input.name,
-                "ephemeral": input.ephemeral,
+                "projectId": project_id,
+                "name": name,
+                "ephemeral": ephemeral,
             }
         }
-        data = await client.execute(CREATE_ENVIRONMENT, variables)
+        data = await client.execute(CREATE_ENVIRONMENT, gql_vars)
         env = data.get("environmentCreate")
         if not env:
             return "Failed to create environment. No data returned."
-        if input.response_format.value == "json":
+        if response_format == "json":
             return format_response(env, "json")
         return (
             f"Environment **{env['name']}** created successfully.\n"
@@ -185,22 +199,27 @@ async def create_environment(input: CreateEnvironmentInput) -> str:
 
 
 @mcp.tool(name="railway_duplicate_environment")
-async def duplicate_environment(input: DuplicateEnvironmentInput) -> str:
+async def duplicate_environment(
+    project_id: ProjectId,
+    source_environment_id: Annotated[str, Field(description="ID of the environment to duplicate")],
+    name: Annotated[str, Field(description="Name for the duplicated environment")],
+    response_format: ResponseFmt = "markdown",
+) -> str:
     """Duplicate an existing environment, copying all its variables and service configs."""
     try:
         client = get_client()
-        variables = {
+        gql_vars = {
             "input": {
-                "projectId": input.project_id,
-                "sourceEnvironmentId": input.source_environment_id,
-                "name": input.name,
+                "projectId": project_id,
+                "sourceEnvironmentId": source_environment_id,
+                "name": name,
             }
         }
-        data = await client.execute(CREATE_ENVIRONMENT, variables)
+        data = await client.execute(CREATE_ENVIRONMENT, gql_vars)
         env = data.get("environmentCreate")
         if not env:
             return "Failed to duplicate environment. No data returned."
-        if input.response_format.value == "json":
+        if response_format == "json":
             return format_response(env, "json")
         return (
             f"Environment **{env['name']}** duplicated successfully.\n"
@@ -214,19 +233,24 @@ async def duplicate_environment(input: DuplicateEnvironmentInput) -> str:
 
 
 @mcp.tool(name="railway_list_variables")
-async def list_variables(input: ListVariablesInput) -> str:
+async def list_variables(
+    project_id: ProjectId,
+    environment_id: EnvironmentId,
+    service_id: Annotated[Optional[str], Field(description="Service ID. If omitted, returns shared/environment-level variables.")] = None,
+    response_format: ResponseFmt = "markdown",
+) -> str:
     """List all resolved variables for a service or shared environment. Values are fully interpolated."""
     try:
         client = get_client()
-        variables = {
-            "projectId": input.project_id,
-            "environmentId": input.environment_id,
+        gql_vars: dict = {
+            "projectId": project_id,
+            "environmentId": environment_id,
         }
-        if input.service_id:
-            variables["serviceId"] = input.service_id
-        data = await client.execute(GET_VARIABLES, variables)
+        if service_id:
+            gql_vars["serviceId"] = service_id
+        data = await client.execute(GET_VARIABLES, gql_vars)
         vars_dict = data.get("variables", {})
-        if input.response_format.value == "json":
+        if response_format == "json":
             return format_response(vars_dict, "json")
         return format_variables_markdown(vars_dict)
     except RailwayAPIError as e:
@@ -234,21 +258,26 @@ async def list_variables(input: ListVariablesInput) -> str:
 
 
 @mcp.tool(name="railway_get_variables_unresolved")
-async def get_variables_unresolved(input: GetVariablesUnresolvedInput) -> str:
+async def get_variables_unresolved(
+    project_id: ProjectId,
+    environment_id: EnvironmentId,
+    service_id: Annotated[Optional[str], Field(description="Service ID. If omitted, returns shared variables.")] = None,
+    response_format: ResponseFmt = "markdown",
+) -> str:
     """Get variables with template references intact (e.g. ${{shared.DATABASE_URL}}). Useful for understanding variable dependencies."""
     try:
         client = get_client()
-        variables = {
-            "projectId": input.project_id,
-            "environmentId": input.environment_id,
+        gql_vars: dict = {
+            "projectId": project_id,
+            "environmentId": environment_id,
         }
-        if input.service_id:
-            variables["serviceId"] = input.service_id
+        if service_id:
+            gql_vars["serviceId"] = service_id
         data = await client.execute(
-            GET_VARIABLES_FOR_SERVICE_INSTANCE, variables
+            GET_VARIABLES_FOR_SERVICE_INSTANCE, gql_vars
         )
         vars_dict = data.get("variablesForServiceInstance", {})
-        if input.response_format.value == "json":
+        if response_format == "json":
             return format_response(vars_dict, "json")
         return format_variables_markdown(vars_dict)
     except RailwayAPIError as e:
@@ -256,22 +285,29 @@ async def get_variables_unresolved(input: GetVariablesUnresolvedInput) -> str:
 
 
 @mcp.tool(name="railway_set_variable")
-async def set_variable(input: SetVariableInput) -> str:
+async def set_variable(
+    project_id: ProjectId,
+    environment_id: EnvironmentId,
+    name: Annotated[str, Field(description="Variable name (e.g. 'DATABASE_URL', 'SECRET_KEY')")],
+    value: Annotated[str, Field(description="Variable value")],
+    service_id: Annotated[Optional[str], Field(description="Service ID. If omitted, sets a shared/environment variable.")] = None,
+    response_format: ResponseFmt = "markdown",
+) -> str:
     """Set (create or update) a single environment variable on a service or shared environment."""
     try:
         client = get_client()
-        variables = {
+        gql_vars: dict = {
             "input": {
-                "projectId": input.project_id,
-                "environmentId": input.environment_id,
-                "name": input.name,
-                "value": input.value,
+                "projectId": project_id,
+                "environmentId": environment_id,
+                "name": name,
+                "value": value,
             }
         }
-        if input.service_id:
-            variables["input"]["serviceId"] = input.service_id
-        await client.execute(UPSERT_VARIABLE, variables)
-        return f"Variable `{input.name}` set successfully."
+        if service_id:
+            gql_vars["input"]["serviceId"] = service_id
+        await client.execute(UPSERT_VARIABLE, gql_vars)
+        return f"Variable `{name}` set successfully."
     except RailwayAPIError as e:
         return f"Error setting variable: {e}"
 
@@ -280,23 +316,30 @@ async def set_variable(input: SetVariableInput) -> str:
     name="railway_bulk_set_variables",
     annotations={"destructiveHint": True},
 )
-async def bulk_set_variables(input: BulkSetVariablesInput) -> str:
+async def bulk_set_variables(
+    project_id: ProjectId,
+    environment_id: EnvironmentId,
+    variables: Annotated[dict[str, str], Field(description="Key-value dict of variables to set (e.g. {'KEY': 'value', 'OTHER': 'val2'})")],
+    service_id: Annotated[Optional[str], Field(description="Service ID. If omitted, sets shared/environment variables.")] = None,
+    replace: Annotated[bool, Field(description="WARNING: If true, all existing variables NOT in this dict will be DELETED. Default false (merge/upsert only).")] = False,
+    response_format: ResponseFmt = "markdown",
+) -> str:
     """Set multiple variables at once. WARNING: if replace=true, variables not in the dict will be DELETED."""
     try:
         client = get_client()
-        variables = {
+        gql_vars: dict = {
             "input": {
-                "projectId": input.project_id,
-                "environmentId": input.environment_id,
-                "variables": input.variables,
-                "replace": input.replace,
+                "projectId": project_id,
+                "environmentId": environment_id,
+                "variables": variables,
+                "replace": replace,
             }
         }
-        if input.service_id:
-            variables["input"]["serviceId"] = input.service_id
-        await client.execute(UPSERT_VARIABLE_COLLECTION, variables)
-        count = len(input.variables)
-        mode = "replaced" if input.replace else "upserted"
+        if service_id:
+            gql_vars["input"]["serviceId"] = service_id
+        await client.execute(UPSERT_VARIABLE_COLLECTION, gql_vars)
+        count = len(variables)
+        mode = "replaced" if replace else "upserted"
         return f"Successfully {mode} {count} variable(s)."
     except RailwayAPIError as e:
         return f"Error bulk setting variables: {e}"
@@ -306,21 +349,27 @@ async def bulk_set_variables(input: BulkSetVariablesInput) -> str:
     name="railway_delete_variable",
     annotations={"destructiveHint": True},
 )
-async def delete_variable(input: DeleteVariableInput) -> str:
+async def delete_variable(
+    project_id: ProjectId,
+    environment_id: EnvironmentId,
+    name: Annotated[str, Field(description="Name of the variable to delete")],
+    service_id: Annotated[Optional[str], Field(description="Service ID. If omitted, deletes a shared variable.")] = None,
+    response_format: ResponseFmt = "markdown",
+) -> str:
     """Delete a single environment variable. This action cannot be undone."""
     try:
         client = get_client()
-        variables = {
+        gql_vars: dict = {
             "input": {
-                "projectId": input.project_id,
-                "environmentId": input.environment_id,
-                "name": input.name,
+                "projectId": project_id,
+                "environmentId": environment_id,
+                "name": name,
             }
         }
-        if input.service_id:
-            variables["input"]["serviceId"] = input.service_id
-        await client.execute(DELETE_VARIABLE, variables)
-        return f"Variable `{input.name}` deleted successfully."
+        if service_id:
+            gql_vars["input"]["serviceId"] = service_id
+        await client.execute(DELETE_VARIABLE, gql_vars)
+        return f"Variable `{name}` deleted successfully."
     except RailwayAPIError as e:
         return f"Error deleting variable: {e}"
 
@@ -329,19 +378,24 @@ async def delete_variable(input: DeleteVariableInput) -> str:
 
 
 @mcp.tool(name="railway_get_deployment_status")
-async def get_deployment_status(input: GetDeploymentStatusInput) -> str:
+async def get_deployment_status(
+    project_id: ProjectId,
+    environment_id: EnvironmentId,
+    service_id: ServiceId,
+    response_format: ResponseFmt = "markdown",
+) -> str:
     """Get the latest deployment(s) for a service in an environment, including status and URLs."""
     try:
         client = get_client()
-        variables = {
-            "projectId": input.project_id,
-            "environmentId": input.environment_id,
-            "serviceId": input.service_id,
+        gql_vars = {
+            "projectId": project_id,
+            "environmentId": environment_id,
+            "serviceId": service_id,
             "first": 5,
         }
-        data = await client.execute(LIST_DEPLOYMENTS, variables)
+        data = await client.execute(LIST_DEPLOYMENTS, gql_vars)
         deployments = _extract_edges(data.get("deployments", {}))
-        if input.response_format.value == "json":
+        if response_format == "json":
             return format_response(deployments, "json")
         return format_deployments_markdown(deployments)
     except RailwayAPIError as e:
@@ -349,15 +403,18 @@ async def get_deployment_status(input: GetDeploymentStatusInput) -> str:
 
 
 @mcp.tool(name="railway_get_build_logs")
-async def get_build_logs(input: GetBuildLogsInput) -> str:
+async def get_build_logs(
+    deployment_id: DeploymentId,
+    response_format: ResponseFmt = "markdown",
+) -> str:
     """Fetch build logs for a specific deployment. Get the deployment ID from railway_get_deployment_status."""
     try:
         client = get_client()
         data = await client.execute(
-            GET_BUILD_LOGS, {"deploymentId": input.deployment_id}
+            GET_BUILD_LOGS, {"deploymentId": deployment_id}
         )
         logs = data.get("buildLogs", [])
-        if input.response_format.value == "json":
+        if response_format == "json":
             return format_response(logs, "json")
         return format_logs_markdown(logs, "Build Logs")
     except RailwayAPIError as e:
@@ -365,15 +422,18 @@ async def get_build_logs(input: GetBuildLogsInput) -> str:
 
 
 @mcp.tool(name="railway_get_deploy_logs")
-async def get_deploy_logs(input: GetDeployLogsInput) -> str:
+async def get_deploy_logs(
+    deployment_id: DeploymentId,
+    response_format: ResponseFmt = "markdown",
+) -> str:
     """Fetch runtime/deploy logs for a specific deployment. Get the deployment ID from railway_get_deployment_status."""
     try:
         client = get_client()
         data = await client.execute(
-            GET_DEPLOY_LOGS, {"deploymentId": input.deployment_id}
+            GET_DEPLOY_LOGS, {"deploymentId": deployment_id}
         )
         logs = data.get("deploymentLogs", [])
-        if input.response_format.value == "json":
+        if response_format == "json":
             return format_response(logs, "json")
         return format_logs_markdown(logs, "Deploy Logs")
     except RailwayAPIError as e:
@@ -381,16 +441,17 @@ async def get_deploy_logs(input: GetDeployLogsInput) -> str:
 
 
 @mcp.tool(name="railway_redeploy")
-async def redeploy(input: RedeployInput) -> str:
+async def redeploy(
+    service_id: ServiceId,
+    environment_id: EnvironmentId,
+    response_format: ResponseFmt = "markdown",
+) -> str:
     """Trigger a full redeploy (rebuild + deploy) for a service in an environment."""
     try:
         client = get_client()
         await client.execute(
             REDEPLOY_SERVICE,
-            {
-                "serviceId": input.service_id,
-                "environmentId": input.environment_id,
-            },
+            {"serviceId": service_id, "environmentId": environment_id},
         )
         return "Redeploy triggered successfully. Use railway_get_deployment_status to monitor progress."
     except RailwayAPIError as e:
@@ -398,12 +459,15 @@ async def redeploy(input: RedeployInput) -> str:
 
 
 @mcp.tool(name="railway_restart_deployment")
-async def restart_deployment(input: RestartDeploymentInput) -> str:
+async def restart_deployment(
+    deployment_id: DeploymentId,
+    response_format: ResponseFmt = "markdown",
+) -> str:
     """Restart a deployment without rebuilding. Useful for picking up new environment variables."""
     try:
         client = get_client()
         await client.execute(
-            RESTART_DEPLOYMENT, {"id": input.deployment_id}
+            RESTART_DEPLOYMENT, {"id": deployment_id}
         )
         return "Deployment restarted successfully."
     except RailwayAPIError as e:
