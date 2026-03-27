@@ -21,6 +21,7 @@ from railway_mcp.formatting import (
 from railway_mcp.queries import (
     CREATE_ENVIRONMENT,
     DELETE_VARIABLE,
+    DEPLOY_SERVICE,
     GET_BUILD_LOGS,
     GET_DEPLOY_LOGS,
     GET_PROJECT,
@@ -32,6 +33,11 @@ from railway_mcp.queries import (
     LIST_PROJECTS,
     REDEPLOY_SERVICE,
     RESTART_DEPLOYMENT,
+    SERVICE_CONNECT,
+    SERVICE_CREATE,
+    SERVICE_DELETE,
+    SERVICE_DISCONNECT,
+    SERVICE_INSTANCE_UPDATE,
     UPSERT_VARIABLE,
     UPSERT_VARIABLE_COLLECTION,
 )
@@ -140,6 +146,162 @@ async def get_service(
         return format_service_instance_markdown(instance)
     except RailwayAPIError as e:
         return f"Error fetching service: {e}"
+
+
+@mcp.tool(name="railway_create_service")
+async def create_service(
+    project_id: ProjectId,
+    name: Annotated[Optional[str], Field(description="Service name (optional, Railway auto-generates if omitted)")] = None,
+    response_format: ResponseFmt = "markdown",
+) -> str:
+    """Create a new empty service in a project.
+
+    After creating, use railway_connect_service to attach a GitHub repo
+    (which triggers the first deploy), or railway_update_service to
+    configure the Dockerfile path, start command, etc.
+    """
+    try:
+        client = get_client()
+        input_data: dict = {"projectId": project_id}
+        if name:
+            input_data["name"] = name
+        data = await client.execute(SERVICE_CREATE, {"input": input_data})
+        svc = data.get("serviceCreate")
+        if not svc:
+            return "Failed to create service. No data returned."
+        if response_format == "json":
+            return format_response(svc, "json")
+        return (
+            f"Service **{svc.get('name', 'unnamed')}** created successfully.\n"
+            f"ID: `{svc['id']}`\n\n"
+            f"Next steps:\n"
+            f"1. Use `railway_connect_service` to attach a GitHub repo\n"
+            f"2. Use `railway_update_service` to set Dockerfile path, start command, etc."
+        )
+    except RailwayAPIError as e:
+        return f"Error creating service: {e}"
+
+
+@mcp.tool(
+    name="railway_delete_service",
+    annotations={"destructiveHint": True},
+)
+async def delete_service(
+    service_id: ServiceId,
+    response_format: ResponseFmt = "markdown",
+) -> str:
+    """Permanently delete a service. This cannot be undone. All deployments and data will be lost."""
+    try:
+        client = get_client()
+        await client.execute(SERVICE_DELETE, {"id": service_id})
+        return f"Service `{service_id}` deleted successfully."
+    except RailwayAPIError as e:
+        return f"Error deleting service: {e}"
+
+
+@mcp.tool(name="railway_connect_service")
+async def connect_service(
+    service_id: ServiceId,
+    repo: Annotated[str, Field(description="GitHub repo in 'owner/repo' format (e.g. 'Travis-Gilbert/index-api')")],
+    branch: Annotated[str, Field(description="Branch to deploy from (e.g. 'main')")] = "main",
+    response_format: ResponseFmt = "markdown",
+) -> str:
+    """Connect a GitHub repository to a service. This triggers a deploy from the repo.
+
+    Use this after railway_create_service to attach a source.
+    The service will build and deploy from the specified repo and branch.
+    """
+    try:
+        client = get_client()
+        data = await client.execute(
+            SERVICE_CONNECT,
+            {"id": service_id, "input": {"repo": repo, "branch": branch}},
+        )
+        svc = data.get("serviceConnect")
+        if not svc:
+            return "Failed to connect service. No data returned."
+        if response_format == "json":
+            return format_response(svc, "json")
+        return (
+            f"Service connected to **{repo}** (branch: {branch}).\n"
+            f"A deploy has been triggered automatically."
+        )
+    except RailwayAPIError as e:
+        return f"Error connecting service: {e}"
+
+
+@mcp.tool(name="railway_disconnect_service")
+async def disconnect_service(
+    service_id: ServiceId,
+    response_format: ResponseFmt = "markdown",
+) -> str:
+    """Disconnect a service from its source repo or image. The service will remain but won't receive new deploys."""
+    try:
+        client = get_client()
+        await client.execute(SERVICE_DISCONNECT, {"id": service_id})
+        return f"Service `{service_id}` disconnected from its source."
+    except RailwayAPIError as e:
+        return f"Error disconnecting service: {e}"
+
+
+@mcp.tool(name="railway_update_service")
+async def update_service(
+    service_id: ServiceId,
+    environment_id: EnvironmentId,
+    dockerfile_path: Annotated[Optional[str], Field(description="Path to Dockerfile (e.g. 'Dockerfile.mcp'). Overrides railway.toml.")] = None,
+    start_command: Annotated[Optional[str], Field(description="Custom start command (e.g. 'python -m mcp_server.server')")] = None,
+    build_command: Annotated[Optional[str], Field(description="Custom build command")] = None,
+    root_directory: Annotated[Optional[str], Field(description="Root directory for the build context (e.g. 'backend/')")] = None,
+    healthcheck_path: Annotated[Optional[str], Field(description="HTTP path for health checks (e.g. '/health')")] = None,
+    num_replicas: Annotated[Optional[int], Field(description="Number of replicas (1 for single instance)")] = None,
+    response_format: ResponseFmt = "markdown",
+) -> str:
+    """Update service instance configuration: Dockerfile path, start command, build command, root directory, health check path, and replica count.
+
+    This writes configuration but does NOT trigger a deploy.
+    After updating, use railway_deploy to apply the changes.
+
+    This is the tool that overrides railway.toml settings per-service.
+    For example, to fix a service deploying with the wrong Dockerfile,
+    set dockerfile_path='Dockerfile.mcp' here.
+    """
+    try:
+        input_data: dict = {}
+        if dockerfile_path is not None:
+            input_data["builder"] = "DOCKERFILE"
+            input_data["dockerfilePath"] = dockerfile_path
+        if start_command is not None:
+            input_data["startCommand"] = start_command
+        if build_command is not None:
+            input_data["buildCommand"] = build_command
+        if root_directory is not None:
+            input_data["rootDirectory"] = root_directory
+        if healthcheck_path is not None:
+            input_data["healthcheckPath"] = healthcheck_path
+        if num_replicas is not None:
+            input_data["numReplicas"] = num_replicas
+
+        if not input_data:
+            return "No fields to update. Provide at least one of: dockerfile_path, start_command, build_command, root_directory, healthcheck_path, num_replicas."
+
+        client = get_client()
+        await client.execute(
+            SERVICE_INSTANCE_UPDATE,
+            {
+                "serviceId": service_id,
+                "environmentId": environment_id,
+                "input": input_data,
+            },
+        )
+
+        updated = ", ".join(f"{k}={v}" for k, v in input_data.items())
+        return (
+            f"Service config updated: {updated}\n\n"
+            f"**Important:** This writes configuration only. "
+            f"Use `railway_deploy` to apply the changes."
+        )
+    except RailwayAPIError as e:
+        return f"Error updating service: {e}"
 
 
 # -- Environments -------------------------------------------------------------
@@ -446,7 +608,7 @@ async def redeploy(
     environment_id: EnvironmentId,
     response_format: ResponseFmt = "markdown",
 ) -> str:
-    """Trigger a full redeploy (rebuild + deploy) for a service in an environment."""
+    """Trigger a full redeploy (rebuild + deploy) for a service in an environment. Uses the existing source and config."""
     try:
         client = get_client()
         await client.execute(
@@ -456,6 +618,28 @@ async def redeploy(
         return "Redeploy triggered successfully. Use railway_get_deployment_status to monitor progress."
     except RailwayAPIError as e:
         return f"Error triggering redeploy: {e}"
+
+
+@mcp.tool(name="railway_deploy")
+async def deploy(
+    service_id: ServiceId,
+    environment_id: EnvironmentId,
+    response_format: ResponseFmt = "markdown",
+) -> str:
+    """Trigger a fresh deploy for a service. Use this after railway_update_service to apply config changes.
+
+    Unlike railway_redeploy, this creates a new deployment that picks up
+    any staged config changes (Dockerfile path, start command, etc.).
+    """
+    try:
+        client = get_client()
+        await client.execute(
+            DEPLOY_SERVICE,
+            {"serviceId": service_id, "environmentId": environment_id},
+        )
+        return "Deploy triggered successfully. Use railway_get_deployment_status to monitor progress."
+    except RailwayAPIError as e:
+        return f"Error triggering deploy: {e}"
 
 
 @mcp.tool(name="railway_restart_deployment")
