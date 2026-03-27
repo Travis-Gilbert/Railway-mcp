@@ -102,6 +102,51 @@ query serviceInstance($serviceId: String!, $environmentId: String!) {
 }
 """
 
+SERVICE_CREATE = """
+mutation serviceCreate($input: ServiceCreateInput!) {
+  serviceCreate(input: $input) {
+    id
+    name
+  }
+}
+"""
+
+SERVICE_DELETE = """
+mutation serviceDelete($id: String!) {
+  serviceDelete(id: $id)
+}
+"""
+
+SERVICE_CONNECT = """
+mutation serviceConnect($id: String!, $input: ServiceConnectInput!) {
+  serviceConnect(id: $id, input: $input) {
+    id
+  }
+}
+"""
+
+SERVICE_DISCONNECT = """
+mutation serviceDisconnect($id: String!) {
+  serviceDisconnect(id: $id) {
+    id
+  }
+}
+"""
+
+SERVICE_INSTANCE_UPDATE = """
+mutation serviceInstanceUpdate(
+  $serviceId: String!
+  $environmentId: String!
+  $input: ServiceInstanceUpdateInput!
+) {
+  serviceInstanceUpdate(
+    serviceId: $serviceId
+    environmentId: $environmentId
+    input: $input
+  )
+}
+"""
+
 # -- Environments -------------------------------------------------------------
 
 LIST_ENVIRONMENTS = """
@@ -232,6 +277,18 @@ mutation serviceInstanceRedeploy(
   $environmentId: String!
 ) {
   serviceInstanceRedeploy(
+    serviceId: $serviceId
+    environmentId: $environmentId
+  )
+}
+"""
+
+DEPLOY_SERVICE = """
+mutation serviceInstanceDeployV2(
+  $serviceId: String!
+  $environmentId: String!
+) {
+  serviceInstanceDeployV2(
     serviceId: $serviceId
     environmentId: $environmentId
   )
