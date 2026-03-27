@@ -268,7 +268,6 @@ async def update_service(
     try:
         input_data: dict = {}
         if dockerfile_path is not None:
-            input_data["builder"] = "DOCKERFILE"
             input_data["dockerfilePath"] = dockerfile_path
         if start_command is not None:
             input_data["startCommand"] = start_command
