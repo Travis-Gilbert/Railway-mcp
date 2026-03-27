@@ -12,7 +12,7 @@ Python FastMCP server wrapping the Railway GraphQL API for use in claude.ai.
 
 ## File Map
 
-- `railway_mcp/server.py` - FastMCP instance + all 17 tool registrations
+- `railway_mcp/server.py` - FastMCP instance + all 23 tool registrations
 - `railway_mcp/client.py` - Async GraphQL client with error handling
 - `railway_mcp/queries.py` - All GraphQL query/mutation string constants
 - `railway_mcp/models.py` - Pydantic v2 input models for every tool
@@ -33,14 +33,23 @@ This follows the exact same pattern as Travis-Gilbert/ticktick-mcp:
 - The GraphQL client is a module-level singleton (get_client())
 - All tools catch RailwayAPIError and return error strings (never raise)
 - Relay-style pagination (edges/node) is extracted via _extract_edges()
-- Destructive tools (delete_variable, bulk_set with replace=True) have destructiveHint=True
+- Destructive tools (delete_variable, bulk_set with replace=True, delete_service) have destructiveHint=True
 - Projects/services/environments are referenced by UUID strings
+- Railway's staged config model: serviceInstanceUpdate writes config,
+  then serviceInstanceDeployV2 applies it. The tools guide users
+  through this two-step flow via descriptions.
 
 ## Tool Count
 
-17 total: 10 read-only, 7 write (2 destructive)
+23 total: 10 read-only, 13 write (3 destructive)
 
-Categories: Projects (2), Services (2), Environments (3), Variables (5), Deployments (5)
+Categories:
+- Projects (2): list, get
+- Services (6): list, get, create, delete, connect, disconnect
+- Service Config (1): update (Dockerfile path, start command, root dir, health check, replicas)
+- Environments (3): list, create, duplicate
+- Variables (5): list, list unresolved, set, bulk set, delete
+- Deployments (6): status, build logs, deploy logs, redeploy, deploy (fresh), restart
 
 ## Testing
 
